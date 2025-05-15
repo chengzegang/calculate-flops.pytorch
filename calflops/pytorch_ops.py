@@ -1,20 +1,20 @@
 # !usr/bin/env python
 # -*- coding:utf-8 -*-
 
-'''
- Description  : 
- Version      : 1.0
- Author       : MrYXJ
- Mail         : yxj2017@gmail.com
- Github       : https://github.com/MrYxJ
- Date         : 2023-08-19 22:34:47
- LastEditTime : 2023-08-23 11:17:33
- Copyright (C) 2023 mryxj. All rights reserved.
-'''
+"""
+Description  :
+Version      : 1.0
+Author       : MrYXJ
+Mail         : yxj2017@gmail.com
+Github       : https://github.com/MrYxJ
+Date         : 2023-08-19 22:34:47
+LastEditTime : 2023-09-13 16:38:00
+Copyright (C) 2023 mryxj. All rights reserved.
+"""
 
-'''
+"""
 The part of code is inspired by ptflops and deepspeed profiling.
-'''
+"""
 
 import numpy as np
 import torch
@@ -34,10 +34,12 @@ def _prod(dims):
         p *= v
     return p
 
+
 def _linear_flops_compute(input, weight, bias=None):
     out_features = weight.shape[0]
     macs = input.numel() * out_features
     return 2 * macs, macs
+
 
 # Activation just calculate FLOPs， MACs is 0
 def _relu_flops_compute(input, inplace=False):
@@ -68,15 +70,27 @@ def _gelu_flops_compute(input, **kwargs):
     return input.numel(), 0
 
 
-def _pool_flops_compute(input,
-                        kernel_size,
-                        stride=None,
-                        padding=0,
-                        dilation=None,
-                        ceil_mode=False,
-                        count_include_pad=True,
-                        divisor_override=None,
-                        return_indices=None):
+def _scaled_dot_product_attention_flops_compute(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    attn_mask: Optional[Tensor] = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+    enable_gqa: bool = False,
+):
+    B = query.shape[0]
+    H = query.shape[1]
+    N1 = query.shape[2]
+    C = query.shape[3]
+    N2 = key.shape[2]
+    flops = B * H * N1 * C * N2 * 2 + B * H * N1 * N2 + B * H * N1 * N2 + B * H * N1 * N2 * C * 2
+    macs = B * H * N1 * C * N2 + B * H * N1 * N2 * C
+    return flops, macs
+
+
+def _pool_flops_compute(input, kernel_size, stride=None, padding=0, dilation=None, ceil_mode=False, count_include_pad=True, divisor_override=None, return_indices=None):
     return input.numel(), 0
 
 
@@ -91,25 +105,24 @@ def _conv_flops_compute(input, weight, bias=None, stride=1, padding=0, dilation=
 
     length = len(input_dims)
 
-    strides = stride if type(stride) is tuple else (stride, ) * length
-    dilations = dilation if type(dilation) is tuple else (dilation, ) * length
+    strides = stride if type(stride) is tuple else (stride,) * length
+    dilations = dilation if type(dilation) is tuple else (dilation,) * length
     if isinstance(padding, str):
-        if padding == 'valid':
-            paddings = (0, ) * length
-        elif padding == 'same':
+        if padding == "valid":
+            paddings = (0,) * length
+        elif padding == "same":
             paddings = ()
             for d, k in zip(dilations, kernel_dims):
                 total_padding = d * (k - 1)
-                paddings += (total_padding // 2, )
+                paddings += (total_padding // 2,)
     elif isinstance(padding, tuple):
         paddings = padding
     else:
-        paddings = (padding, ) * length
+        paddings = (padding,) * length
 
     output_dims = []
     for idx, input_dim in enumerate(input_dims):
-        output_dim = (input_dim + 2 * paddings[idx] - (dilations[idx] *
-                                                       (kernel_dims[idx] - 1) + 1)) // strides[idx] + 1
+        output_dim = (input_dim + 2 * paddings[idx] - (dilations[idx] * (kernel_dims[idx] - 1) + 1)) // strides[idx] + 1
         output_dims.append(output_dim)
 
     filters_per_channel = out_channels // groups
@@ -142,16 +155,15 @@ def _conv_trans_flops_compute(
     input_dims = list(input.shape[2:])
 
     length = len(input_dims)
-     
-    paddings = padding if type(padding) is tuple else (padding, ) * length
-    strides = stride if type(stride) is tuple else (stride, ) * length
-    dilations = dilation if type(dilation) is tuple else (dilation, ) * length
+
+    paddings = padding if type(padding) is tuple else (padding,) * length
+    strides = stride if type(stride) is tuple else (stride,) * length
+    dilations = dilation if type(dilation) is tuple else (dilation,) * length
 
     output_dims = []
     for idx, input_dim in enumerate(input_dims):
 
-        output_dim = (input_dim + 2 * paddings[idx] - (dilations[idx] *
-                                                       (kernel_dims[idx] - 1) + 1)) // strides[idx] + 1
+        output_dim = (input_dim + 2 * paddings[idx] - (dilations[idx] * (kernel_dims[idx] - 1) + 1)) // strides[idx] + 1
         output_dims.append(output_dim)
 
     paddings = padding if type(padding) is tuple else (padding, padding)
@@ -201,11 +213,7 @@ def _layer_norm_flops_compute(
     return input.numel() * (5 if has_affine else 4), 0
 
 
-def _group_norm_flops_compute(input: Tensor,
-                              num_groups: int,
-                              weight: Optional[Tensor] = None,
-                              bias: Optional[Tensor] = None,
-                              eps: float = 1e-5):
+def _group_norm_flops_compute(input: Tensor, num_groups: int, weight: Optional[Tensor] = None, bias: Optional[Tensor] = None, eps: float = 1e-5):
     has_affine = weight is not None
     # estimation
     return input.numel() * (5 if has_affine else 4), 0
@@ -228,7 +236,7 @@ def _instance_norm_flops_compute(
 
 def _upsample_flops_compute(*args, **kwargs):
     input = args[0]
-    size = kwargs.get('size', None)
+    size = kwargs.get("size", None)
     if size is None and len(args) > 1:
         size = args[1]
 
@@ -238,7 +246,7 @@ def _upsample_flops_compute(*args, **kwargs):
         else:
             return int(size), 0
 
-    scale_factor = kwargs.get('scale_factor', None)
+    scale_factor = kwargs.get("scale_factor", None)
     if scale_factor is None and len(args) > 2:
         scale_factor = args[2]
     assert scale_factor is not None, "either size or scale_factor should be defined"
@@ -247,7 +255,7 @@ def _upsample_flops_compute(*args, **kwargs):
     if isinstance(scale_factor, tuple) and len(scale_factor) == len(input):
         flops * int(_prod(scale_factor))
     else:
-        flops * scale_factor**len(input)
+        flops * scale_factor ** len(input)
     return flops, 0
 
 
@@ -449,6 +457,7 @@ MODULE_HOOK_MAPPING = {
     nn.GRUCell: _rnn_cell_forward_hook,
 }
 
+
 def _patch_functionals(old_functions, module_flop_count, module_mac_count):
     # FC
     F.linear = wrapFunc(F.linear, _linear_flops_compute, old_functions, module_flop_count, module_mac_count)
@@ -501,6 +510,10 @@ def _patch_functionals(old_functions, module_flop_count, module_mac_count):
 
     # embedding
     F.embedding = wrapFunc(F.embedding, _embedding_flops_compute, old_functions, module_flop_count, module_mac_count)
+
+    F.scaled_dot_product_attention = wrapFunc(
+        F.scaled_dot_product_attention, _scaled_dot_product_attention_flops_compute, old_functions, module_flop_count, module_mac_count
+    )
 
 
 def _patch_tensor_methods(old_functions, module_flop_count, module_mac_count):
@@ -562,6 +575,7 @@ def _reload_functionals(old_functions):
     F.interpolate = old_functions[F.interpolate.__str__]
     F.softmax = old_functions[F.softmax.__str__]
     F.embedding = old_functions[F.embedding.__str__]
+    F.scaled_dot_product_attention = old_functions[F.scaled_dot_product_attention.__str__]
 
 
 def _reload_tensor_methods(old_functions):
