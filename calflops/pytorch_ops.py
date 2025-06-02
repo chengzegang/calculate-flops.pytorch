@@ -21,9 +21,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from typing import List
+from typing import Any, List, Tuple
 from typing import Optional
 from collections import OrderedDict
+
+try:
+    import flash_attn
+except ImportError:
+    flash_attn = None
 
 Tensor = torch.Tensor
 
@@ -85,8 +90,53 @@ def _scaled_dot_product_attention_flops_compute(
     N1 = query.shape[2]
     C = query.shape[3]
     N2 = key.shape[2]
-    flops = B * H * N1 * C * N2 * 2 + B * H * N1 * N2 + B * H * N1 * N2 + B * H * N1 * N2 * C * 2
+    flops = B * H * N1 * C * N2 * 2 + B * H * N1 * N2 + 4 * B * H * N1 * N2 + B * H * N1 * N2 * C * 2
     macs = B * H * N1 * C * N2 + B * H * N1 * N2 * C
+    return flops, macs
+
+
+def flash_attn_varlen_func_flops_compute(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    cu_seqlens_q: Any,
+    cu_seqlens_k: Any,
+    max_seqlen_q: Tensor,
+    max_seqlen_k: Tensor,
+    dropout_p: float = 0.0,
+    softmax_scale: float | None = None,
+    causal: bool = False,
+    window_size: Tuple[int, int] = (-1, -1),  # -1 means infinite context window
+    softcap: float = 0.0,  # 0.0 means deactivated
+    alibi_slopes: bool = None,
+    deterministic: bool = False,
+    return_attn_probs: bool = False,
+    block_table=None,
+):
+
+    nheads = q.shape[1]
+    headdim = q.shape[-1]
+    start_q_ind = 0
+    start_kv_ind = 0
+    end_q_ind = 0
+    end_kv_ind = 0
+
+    flops = 0
+    macs = 0
+    if isinstance(cu_seqlens_k, torch.Tensor):
+        cu_seqlens_k = cu_seqlens_k.tolist()
+    if isinstance(cu_seqlens_q, torch.Tensor):
+        cu_seqlens_q = cu_seqlens_q.tolist()
+    for cu_q, cu_kv in zip(cu_seqlens_q, cu_seqlens_k):
+        end_q_ind += cu_q
+        end_kv_ind += cu_kv
+
+        q_len = end_q_ind - start_q_ind
+        kv_len = end_kv_ind - start_kv_ind
+
+        flops += nheads * q_len * headdim * kv_len * 2 + nheads * q_len * kv_len + 4 * nheads * q_len * kv_len + nheads * q_len * kv_len * headdim * 2
+        macs += nheads * q_len * headdim * kv_len + nheads * q_len * kv_len * headdim
+
     return flops, macs
 
 
@@ -515,6 +565,29 @@ def _patch_functionals(old_functions, module_flop_count, module_mac_count):
         F.scaled_dot_product_attention, _scaled_dot_product_attention_flops_compute, old_functions, module_flop_count, module_mac_count
     )
 
+    _flash_attn_functionals(old_functions, module_flop_count, module_mac_count)
+
+
+def _flash_attn_functionals(old_functions, module_flop_count, module_mac_count):
+    if flash_attn is not None:
+        # flash_attn.flash_attn_func = wrapFunc(flash_attn.flash_attn_func, _flash_attn_varlen_flops_compute, old_functions, module_flop_count, module_mac_count)
+        # flash_attn.flash_attn_kvpacked_func = wrapFunc(
+        #    flash_attn.flash_attn_kvpacked_func, _flash_attn_varlen_flops_compute, old_functions, module_flop_count, module_mac_count
+        # )
+        # flash_attn.flash_attn_qkvpacked_func = wrapFunc(
+        #    flash_attn.flash_attn_qkvpacked_func, _flash_attn_varlen_flops_compute, old_functions, module_flop_count, module_mac_count
+        # )
+
+        flash_attn.flash_attn_varlen_func = wrapFunc(
+            flash_attn.flash_attn_varlen_func, flash_attn_varlen_func_flops_compute, old_functions, module_flop_count, module_mac_count
+        )
+        # flash_attn.flash_attn_varlen_kvpacked_func = wrapFunc(
+        #    flash_attn.flash_attn_varlen_kvpacked_func, _flash_attn_varlen_flops_compute, old_functions, module_flop_count, module_mac_count
+        # )
+        # flash_attn.flash_attn_varlen_qkvpacked_func = wrapFunc(
+        #    flash_attn.flash_attn_varlen_qkvpacked_func, _flash_attn_varlen_flops_compute, old_functions, module_flop_count, module_mac_count
+        # )
+
 
 def _patch_tensor_methods(old_functions, module_flop_count, module_mac_count):
     torch.matmul = wrapFunc(torch.matmul, _matmul_flops_compute, old_functions, module_flop_count, module_mac_count)
@@ -576,6 +649,18 @@ def _reload_functionals(old_functions):
     F.softmax = old_functions[F.softmax.__str__]
     F.embedding = old_functions[F.embedding.__str__]
     F.scaled_dot_product_attention = old_functions[F.scaled_dot_product_attention.__str__]
+
+    _reload_flash_attn_functionals(old_functions)
+
+
+def _reload_flash_attn_functionals(old_functions):
+    if flash_attn is not None:
+        # flash_attn.flash_attn_func = old_functions.get(flash_attn.flash_attn_func.__str__, None)
+        # flash_attn.flash_attn_kvpacked_func = old_functions.get(flash_attn.flash_attn_kvpacked_func.__str__, None)
+        # flash_attn.flash_attn_qkvpacked_func = old_functions.get(flash_attn.flash_attn_qkvpacked_func.__str__, None)
+        flash_attn.flash_attn_varlen_func = old_functions[flash_attn.flash_attn_varlen_func.__str__]
+        # flash_attn.flash_attn_varlen_kvpacked_func = old_functions.get(flash_attn.flash_attn_varlen_kvpacked_func.__str__, None)
+        # flash_attn.flash_attn_varlen_qkvpacked_func = old_functions.get(flash_attn.flash_attn_varlen_qkvpacked_func.__str__, None)
 
 
 def _reload_tensor_methods(old_functions):

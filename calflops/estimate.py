@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#import argparse
+# import argparse
 
 from huggingface_hub import model_info
 from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
@@ -51,11 +51,7 @@ def check_has_model(error):
     """
     if is_timm_available() and isinstance(error, RuntimeError) and "Unknown model" in error.args[0]:
         return "timm"
-    elif (
-        is_transformers_available()
-        and isinstance(error, OSError)
-        and "does not appear to have a file named" in error.args[0]
-    ):
+    elif is_transformers_available() and isinstance(error, OSError) and "does not appear to have a file named" in error.args[0]:
         return "transformers"
     else:
         return "unknown"
@@ -85,9 +81,7 @@ def create_empty_model(model_name: str, library_name: str, trust_remote_code: bo
     model_info = verify_on_hub(model_name, access_token)
     # Simplified errors
     if model_info == "gated":
-        raise GatedRepoError(
-            f"Repo for model `{model_name}` is gated. You must be authenticated to access it. Please run `huggingface-cli login`."
-        )
+        raise GatedRepoError(f"Repo for model `{model_name}` is gated. You must be authenticated to access it. Please run `huggingface-cli login`.")
     elif model_info == "repo":
         raise RepositoryNotFoundError(
             f"Repo for model `{model_name}` does not exist on the Hub. If you are trying to access a private repo,"
@@ -101,9 +95,7 @@ def create_empty_model(model_name: str, library_name: str, trust_remote_code: bo
             )
     if library_name == "transformers":
         if not is_transformers_available():
-            raise ImportError(
-                f"To check `{model_name}`, `transformers` must be installed. Please install it via `pip install transformers`"
-            )
+            raise ImportError(f"To check `{model_name}`, `transformers` must be installed. Please install it via `pip install transformers`")
         print(f"Loading pretrained config for `{model_name}` from `transformers`...")
 
         auto_map = model_info.config.get("auto_map", False)
@@ -123,16 +115,12 @@ def create_empty_model(model_name: str, library_name: str, trust_remote_code: bo
             model = constructor.from_config(config, trust_remote_code=trust_remote_code)
     elif library_name == "timm":
         if not is_timm_available():
-            raise ImportError(
-                f"To check `{model_name}`, `timm` must be installed. Please install it via `pip install timm`"
-            )
+            raise ImportError(f"To check `{model_name}`, `timm` must be installed. Please install it via `pip install timm`")
         print(f"Loading pretrained config for `{model_name}` from `timm`...")
         with init_empty_weights():
             model = timm.create_model(model_name, pretrained=False)
     else:
-        raise ValueError(
-            f"Library `{library_name}` is not supported yet, please open an issue on GitHub for us to add support."
-        )
+        raise ValueError(f"Library `{library_name}` is not supported yet, please open an issue on GitHub for us to add support.")
     return model
 
 
